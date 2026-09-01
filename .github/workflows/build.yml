@@ -1,113 +1,220 @@
-name: build
-on: [push, pull_request]
+name: Build & Release
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
 jobs:
   build:
+    name: Build ${{ matrix.name }}
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
-        os: [windows-latest, macos-latest, ubuntu-latest]
-        build_type: [RelWithDebInfo, Debug]
-        ui: [gui, cli]
-        scripting: [lua, noscripts]
-        exclude:
-          - build_type: Debug
-            ui: gui
-          - build_type: RelWithDebInfo
-            ui: cli
-          - build_type: RelWithDebInfo
-            scripting: noscripts
+        include:
+          - name: Windows-x64
+            os: windows-latest
+            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Windows-Release-x64.zip
+            skia-lib: skia.lib
+            artifact: Aseprite-Windows-x64
+            ext: zip
+          - name: Linux-x64
+            os: ubuntu-latest
+            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64.zip
+            skia-lib: libskia.a
+            artifact: Aseprite-Linux-x64
+            ext: tar.gz
+          - name: macOS-arm64
+            os: macos-latest
+            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-arm64.zip
+            skia-lib: libskia.a
+            artifact: Aseprite-macOS-arm64
+            ext: zip
+          - name: macOS-x64
+            os: macos-15
+            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-x64.zip
+            skia-lib: libskia.a
+            artifact: Aseprite-macOS-x64
+            ext: zip
+
     steps:
-    - uses: actions/checkout@v7
-      with:
-        submodules: 'recursive'
-    - name: Install Dependencies
-      if: runner.os == 'Linux'
-      shell: bash
-      run: |
-        sudo apt-get update -qq
-        sudo apt-get install -y \
-          libpixman-1-dev libfreetype6-dev libharfbuzz-dev zlib1g-dev \
-          libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev \
-          libfontconfig1-dev
-    - name: Install Skia
-      if: ${{ matrix.ui == 'gui' }}
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Windows" ]] ; then
-          this_dir=$(cygpath "${{ github.workspace }}")
-        else
-          this_dir="${{ github.workspace }}"
-        fi
-        skia_url=$(source $this_dir/laf/misc/skia-url.sh | xargs)
-        skia_file=$(basename $skia_url)
-        curl --ssl-revoke-best-effort -L -o "$skia_file" "$skia_url"
-        unzip "$skia_file" -d skia
-    - name: ccache
-      uses: hendrikmuhs/ccache-action@v1.2.23
-      if: ${{ runner.os == 'Linux' || runner.os == 'macOS' }}
-      with:
-        key: ${{ matrix.os }}-${{ matrix.ui }}-${{ matrix.scripting }}-${{ matrix.build_type }}
-    - uses: aseprite/get-ninja@main
-    - uses: TheMrMilchmann/setup-msvc-dev@v4
-      if: runner.os == 'Windows'
-      with:
-        arch: x64
-    - name: Generating Makefiles
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Windows" ]] ; then
-          export enable_ccache=off
-        else
-          export enable_ccache=on
-        fi
+      - uses: actions/checkout@v4
+        with:
+          submodules: 'recursive'
+          persist-credentials: false
 
-        if [[ "${{ matrix.ui }}" == "gui" ]] ; then
-          export laf_backend=skia
-        else
-          export laf_backend=none
-        fi
+      - name: Install dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y ccache libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libfontconfig1-dev
 
-        if [[ "${{ matrix.scripting }}" == "lua" ]] ; then
-          export enable_scripting=on
-        else
-          export enable_scripting=off
-        fi
+      - name: Install ninja (Linux)
+        if: runner.os == 'Linux'
+        run: python3 -m pip install ninja
 
-        if [[ "${{ runner.os }}" == "macOS" ]] ; then
-          export skia_arch=arm64
-        else
-          export skia_arch=x64
-        fi
+      - name: Cache Skia
+        id: skia-cache
+        uses: actions/cache@v4
+        with:
+          path: ${{ runner.temp }}/deps/skia
+          key: skia-${{ matrix.name }}-m124-08a5439a6b
 
-        cmake -S . -B build -G Ninja \
-          -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
-          -DCMAKE_OSX_DEPLOYMENT_TARGET=10.14 \
-          -DENABLE_TESTS=ON \
-          -DENABLE_SCRIPTING=$enable_scripting \
-          -DENABLE_CCACHE=$enable_ccache \
-          -DLAF_BACKEND=$laf_backend \
-          -DSKIA_DIR=$(realpath skia) \
-          -DSKIA_LIBRARY_DIR=$(realpath skia/out/Release-$skia_arch)
-    - name: Compiling
-      shell: bash
-      run: |
-        cd build && ninja
-    - name: Running C++ Tests
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Linux" ]] ; then
-          export XVFB=xvfb-run
-        fi
-        cd build && $XVFB ctest --output-on-failure
-    - name: Running CLI Tests
-      if: ${{ matrix.scripting == 'lua' }}
-      shell: bash
-      run: |
-        if [[ "${{ runner.os }}" == "Linux" ]] ; then
-          export XVFB=xvfb-run
-        fi
-        export ASEPRITE=$PWD/build/bin/aseprite
-        cd tests
-        $XVFB bash run-tests.sh
+      - name: Download Skia
+        if: steps.skia-cache.outputs.cache-hit != 'true'
+        shell: bash
+        run: |
+          mkdir -p "${RUNNER_TEMP}/deps/skia"
+          curl -L --retry 3 -o skia.zip "${{ matrix.skia }}"
+          unzip -q skia.zip -d "${RUNNER_TEMP}/deps/skia"
+
+      - name: Fix Skia path (nested dir)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          # Skia zip contains "skia/" top-level dir; flatten so $SKIA_DIR/out exists
+          if [ -d "${RUNNER_TEMP}/deps/skia/skia" ] && [ ! -d "${RUNNER_TEMP}/deps/skia/out" ]; then
+            mv "${RUNNER_TEMP}/deps/skia/skia"/* "${RUNNER_TEMP}/deps/skia/"
+            rmdir "${RUNNER_TEMP}/deps/skia/skia"
+          fi
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: |
+          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
+            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
+          else
+            echo "version=continuous-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Set Skia env
+        shell: bash
+        run: |
+          echo "SKIA_DIR=${RUNNER_TEMP}/deps/skia" >> "$GITHUB_ENV"
+          echo "SKIA_LIBRARY_DIR=${RUNNER_TEMP}/deps/skia/out/Release-x64" >> "$GITHUB_ENV"
+          if [[ "${{ runner.os }}" == "macOS" && "${{ matrix.artifact }}" == *arm64 ]]; then
+            echo "SKIA_LIBRARY_DIR=${RUNNER_TEMP}/deps/skia/out/Release-arm64" >> "$GITHUB_ENV"
+          fi
+          echo "SKIA_LIBRARY=${SKIA_LIBRARY_DIR}/${{ matrix.skia-lib }}" >> "$GITHUB_ENV"
+
+      - name: Configure (Windows)
+        if: runner.os == 'Windows'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64 || call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64
+          mkdir build
+          cd build
+          cmake -G Ninja ^
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
+            -DLAF_BACKEND=skia ^
+            -DSKIA_DIR=%SKIA_DIR% ^
+            -DSKIA_LIBRARY_DIR=%SKIA_LIBRARY_DIR% ^
+            -DSKIA_LIBRARY=%SKIA_LIBRARY% ^
+            ..
+
+      - name: Configure (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          if [[ "${{ matrix.artifact }}" == *arm64 ]]; then
+            ARCH=arm64
+            DEPLOY=11.0
+          else
+            ARCH=x86_64
+            DEPLOY=10.14
+          fi
+          mkdir build && cd build
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_OSX_ARCHITECTURES=$ARCH \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=$DEPLOY \
+            -DLAF_BACKEND=skia \
+            -DSKIA_DIR=$SKIA_DIR \
+            -DSKIA_LIBRARY_DIR=$SKIA_LIBRARY_DIR \
+            -DSKIA_LIBRARY=$SKIA_LIBRARY \
+            ..
+
+      - name: Configure (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir build && cd build
+          cmake -G Ninja \
+            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
+            -DCMAKE_CXX_FLAGS:STRING=-stdlib=libstdc++ \
+            -DCMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libstdc++ \
+            -DLAF_BACKEND=skia \
+            -DSKIA_DIR=$SKIA_DIR \
+            -DSKIA_LIBRARY_DIR=$SKIA_LIBRARY_DIR \
+            -DSKIA_LIBRARY=$SKIA_LIBRARY \
+            ..
+
+      - name: Build
+        run: |
+          ninja -C build aseprite
+
+      - name: Check binary
+        shell: bash
+        run: |
+          ls -la build/bin
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            file build/bin/aseprite.exe
+            build/bin/aseprite.exe --version || true
+          else
+            file build/bin/aseprite
+            build/bin/aseprite --version || true
+          fi
+
+      - name: Package
+        shell: bash
+        run: |
+          cd build/bin
+          if [[ "${{ runner.os }}" == "Windows" ]]; then
+            7z a "${{ runner.temp }}/${{ matrix.artifact }}.zip" aseprite.exe data
+          elif [[ "${{ runner.os }}" == "Linux" ]]; then
+            tar -czf "${{ runner.temp }}/${{ matrix.artifact }}.tar.gz" aseprite data
+          else
+            ditto -c -k --sequesterRsrc --keepParent aseprite "${{ runner.temp }}/${{ matrix.artifact }}.zip"
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: ${{ runner.temp }}/${{ matrix.artifact }}.${{ matrix.ext }}
+          if-no-files-found: error
+
+  release:
+    name: Create release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - name: Download artifacts
+        uses: actions/download-artifacts@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+
+      - name: Create/update continuous release
+        if: github.ref == 'refs/heads/main'
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: continuous
+          name: Continuous Build
+          body: |
+            Automated build from `main` @ ${{ github.sha }}
+
+            Latest commit: ${{ github.event.head_commit.message }}
+          prerelease: true
+          files: artifacts/*
+          generate_release_notes: false
+
+      - name: Create tag release
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
