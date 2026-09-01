@@ -11,182 +11,86 @@ permissions:
 
 jobs:
   build:
-    name: Build ${{ matrix.name }}
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - name: Windows-x64
-            os: windows-latest
-            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Windows-Release-x64.zip
-            skia-lib: skia.lib
-            artifact: Aseprite-Windows-x64
-            ext: zip
-          - name: Linux-x64
-            os: ubuntu-latest
-            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Linux-Release-x64.zip
-            skia-lib: libskia.a
-            artifact: Aseprite-Linux-x64
-            ext: tar.gz
-          - name: macOS-arm64
-            os: macos-latest
-            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-arm64.zip
-            skia-lib: libskia.a
-            artifact: Aseprite-macOS-arm64
-            ext: zip
-          - name: macOS-x64
-            os: macos-latest
-            skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-x64.zip
-            skia-lib: libskia.a
-            artifact: Aseprite-macOS-x64
-            ext: zip
-
+    name: Build Windows-x64
+    runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          submodules: 'recursive'
+          submodules: recursive
           fetch-depth: 0
 
-      - name: Install dependencies (Linux)
-        if: runner.os == 'Linux'
-        run: sudo apt-get update && sudo apt-get install -y ccache libx11-dev libxcursor-dev libxi-dev libxrandr-dev libgl1-mesa-dev libfontconfig1-dev
-
-      - name: Install ninja (Linux)
-        if: runner.os == 'Linux'
-        run: python3 -m pip install ninja
+      - name: Setup MSVC
+        uses: ilammy/msvc-dev-cmd@v1
+        with:
+          arch: x64
 
       - name: Cache Skia
         id: skia-cache
         uses: actions/cache@v4
         with:
           path: ${{ runner.temp }}/deps/skia
-          key: skia-${{ matrix.name }}-m124-08a5439a6b
+          key: skia-Windows-x64-m124-08a5439a6b
 
       - name: Download Skia
         if: steps.skia-cache.outputs.cache-hit != 'true'
         shell: bash
         run: |
           mkdir -p "${RUNNER_TEMP}/deps/skia"
-          curl -L --retry 3 -o skia.zip "${{ matrix.skia }}"
+          curl -L --retry 3 -o skia.zip "https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-Windows-Release-x64.zip"
           unzip -q skia.zip -d "${RUNNER_TEMP}/deps/skia"
-
-      - name: Fix Skia path (nested dir)
-        if: runner.os == 'Windows'
-        shell: bash
-        run: |
-          # Skia zip contains "skia/" top-level dir; flatten so $SKIA_DIR/out exists
+          # zip contains skia/ top-level in some releases, flatten
           if [ -d "${RUNNER_TEMP}/deps/skia/skia" ] && [ ! -d "${RUNNER_TEMP}/deps/skia/out" ]; then
             mv "${RUNNER_TEMP}/deps/skia/skia"/* "${RUNNER_TEMP}/deps/skia/"
             rmdir "${RUNNER_TEMP}/deps/skia/skia"
           fi
-
-      - name: Get version
-        id: version
-        shell: bash
-        run: |
-          if [[ "${GITHUB_REF}" == refs/tags/* ]]; then
-            echo "version=${GITHUB_REF_NAME}" >> "$GITHUB_OUTPUT"
-          else
-            echo "version=continuous-$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          fi
+          ls -R "${RUNNER_TEMP}/deps/skia" | head -30
 
       - name: Set Skia env
         shell: bash
         run: |
           SKIA_DIR="${RUNNER_TEMP}/deps/skia"
           LIB_DIR="${SKIA_DIR}/out/Release-x64"
-          if [[ "${{ runner.os }}" == "macOS" && "${{ matrix.artifact }}" == *arm64 ]]; then
-            LIB_DIR="${SKIA_DIR}/out/Release-arm64"
-          fi
           echo "SKIA_DIR=${SKIA_DIR}" >> "$GITHUB_ENV"
           echo "SKIA_LIBRARY_DIR=${LIB_DIR}" >> "$GITHUB_ENV"
-          echo "SKIA_LIBRARY=${LIB_DIR}/${{ matrix.skia-lib }}" >> "$GITHUB_ENV"
-          echo "SKIA_DIR=${SKIA_DIR} LIB_DIR=${LIB_DIR}"
+          echo "SKIA_LIBRARY=${LIB_DIR}/skia.lib" >> "$GITHUB_ENV"
+          ls -lh "${LIB_DIR}/skia.lib" || ls -R "${SKIA_DIR}" | head -50
 
-      - name: Configure (Windows)
-        if: runner.os == 'Windows'
-        shell: cmd
+      - name: Configure
+        shell: bash
         run: |
-          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\Common7\Tools\VsDevCmd.bat" -arch=x64 || call "C:\Program Files\Microsoft Visual Studio\2022\Community\Common7\Tools\VsDevCmd.bat" -arch=x64
           mkdir build
           cd build
-          cmake -G Ninja ^
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo ^
-            -DLAF_BACKEND=skia ^
-            -DSKIA_DIR=%SKIA_DIR% ^
-            -DSKIA_LIBRARY_DIR=%SKIA_LIBRARY_DIR% ^
-            -DSKIA_LIBRARY=%SKIA_LIBRARY% ^
-            ..
-
-      - name: Configure (macOS)
-        if: runner.os == 'macOS'
-        run: |
-          if [[ "${{ matrix.artifact }}" == *arm64 ]]; then
-            ARCH=arm64
-            DEPLOY=11.0
-          else
-            ARCH=x86_64
-            DEPLOY=10.14
-          fi
-          mkdir build && cd build
           cmake -G Ninja \
             -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_OSX_ARCHITECTURES=$ARCH \
-            -DCMAKE_OSX_DEPLOYMENT_TARGET=$DEPLOY \
             -DLAF_BACKEND=skia \
-            -DSKIA_DIR=$SKIA_DIR \
-            -DSKIA_LIBRARY_DIR=$SKIA_LIBRARY_DIR \
-            -DSKIA_LIBRARY=$SKIA_LIBRARY \
-            ..
-
-      - name: Configure (Linux)
-        if: runner.os == 'Linux'
-        run: |
-          mkdir build && cd build
-          cmake -G Ninja \
-            -DCMAKE_BUILD_TYPE=RelWithDebInfo \
-            -DCMAKE_CXX_FLAGS:STRING=-stdlib=libstdc++ \
-            -DCMAKE_EXE_LINKER_FLAGS:STRING=-stdlib=libstdc++ \
-            -DLAF_BACKEND=skia \
-            -DSKIA_DIR=$SKIA_DIR \
-            -DSKIA_LIBRARY_DIR=$SKIA_LIBRARY_DIR \
-            -DSKIA_LIBRARY=$SKIA_LIBRARY \
+            -DSKIA_DIR="$SKIA_DIR" \
+            -DSKIA_LIBRARY_DIR="$SKIA_LIBRARY_DIR" \
+            -DSKIA_LIBRARY="$SKIA_LIBRARY" \
             ..
 
       - name: Build
-        run: |
-          ninja -C build aseprite
+        shell: bash
+        run: ninja -C build aseprite -j 2
 
       - name: Check binary
         shell: bash
         run: |
-          ls -la build/bin
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            file build/bin/aseprite.exe
-            build/bin/aseprite.exe --version || true
-          else
-            file build/bin/aseprite
-            build/bin/aseprite --version || true
-          fi
+          ls -lh build/bin
+          file build/bin/aseprite.exe || true
+          ./build/bin/aseprite.exe --version || true
 
       - name: Package
         shell: bash
         run: |
           cd build/bin
-          if [[ "${{ runner.os }}" == "Windows" ]]; then
-            7z a "${{ runner.temp }}/${{ matrix.artifact }}.zip" aseprite.exe data
-          elif [[ "${{ runner.os }}" == "Linux" ]]; then
-            tar -czf "${{ runner.temp }}/${{ matrix.artifact }}.tar.gz" aseprite data
-          else
-            zip -r "${{ runner.temp }}/${{ matrix.artifact }}.zip" aseprite data
-          fi
+          7z a "${{ runner.temp }}/Aseprite-Windows-x64.zip" aseprite.exe data
+          ls -lh "${{ runner.temp }}/Aseprite-Windows-x64.zip"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.artifact }}
-          path: ${{ runner.temp }}/${{ matrix.artifact }}.${{ matrix.ext }}
+          name: Aseprite-Windows-x64
+          path: ${{ runner.temp }}/Aseprite-Windows-x64.zip
           if-no-files-found: error
 
   release:
@@ -209,8 +113,6 @@ jobs:
           name: Continuous Build
           body: |
             Automated build from `main` @ ${{ github.sha }}
-
-            Latest commit: ${{ github.event.head_commit.message }}
           prerelease: true
           files: artifacts/*
           generate_release_notes: false
