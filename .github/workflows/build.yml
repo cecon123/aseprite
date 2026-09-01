@@ -36,7 +36,7 @@ jobs:
             artifact: Aseprite-macOS-arm64
             ext: zip
           - name: macOS-x64
-            os: macos-15
+            os: macos-latest
             skia: https://github.com/aseprite/skia/releases/download/m124-08a5439a6b/Skia-macOS-Release-x64.zip
             skia-lib: libskia.a
             artifact: Aseprite-macOS-x64
@@ -46,7 +46,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           submodules: 'recursive'
-          persist-credentials: false
+          fetch-depth: 0
 
       - name: Install dependencies (Linux)
         if: runner.os == 'Linux'
@@ -94,12 +94,15 @@ jobs:
       - name: Set Skia env
         shell: bash
         run: |
-          echo "SKIA_DIR=${RUNNER_TEMP}/deps/skia" >> "$GITHUB_ENV"
-          echo "SKIA_LIBRARY_DIR=${RUNNER_TEMP}/deps/skia/out/Release-x64" >> "$GITHUB_ENV"
+          SKIA_DIR="${RUNNER_TEMP}/deps/skia"
+          LIB_DIR="${SKIA_DIR}/out/Release-x64"
           if [[ "${{ runner.os }}" == "macOS" && "${{ matrix.artifact }}" == *arm64 ]]; then
-            echo "SKIA_LIBRARY_DIR=${RUNNER_TEMP}/deps/skia/out/Release-arm64" >> "$GITHUB_ENV"
+            LIB_DIR="${SKIA_DIR}/out/Release-arm64"
           fi
-          echo "SKIA_LIBRARY=${SKIA_LIBRARY_DIR}/${{ matrix.skia-lib }}" >> "$GITHUB_ENV"
+          echo "SKIA_DIR=${SKIA_DIR}" >> "$GITHUB_ENV"
+          echo "SKIA_LIBRARY_DIR=${LIB_DIR}" >> "$GITHUB_ENV"
+          echo "SKIA_LIBRARY=${LIB_DIR}/${{ matrix.skia-lib }}" >> "$GITHUB_ENV"
+          echo "SKIA_DIR=${SKIA_DIR} LIB_DIR=${LIB_DIR}"
 
       - name: Configure (Windows)
         if: runner.os == 'Windows'
@@ -176,7 +179,7 @@ jobs:
           elif [[ "${{ runner.os }}" == "Linux" ]]; then
             tar -czf "${{ runner.temp }}/${{ matrix.artifact }}.tar.gz" aseprite data
           else
-            ditto -c -k --sequesterRsrc --keepParent aseprite "${{ runner.temp }}/${{ matrix.artifact }}.zip"
+            zip -r "${{ runner.temp }}/${{ matrix.artifact }}.zip" aseprite data
           fi
 
       - name: Upload artifact
@@ -193,7 +196,7 @@ jobs:
     if: github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v')
     steps:
       - name: Download artifacts
-        uses: actions/download-artifacts@v4
+        uses: actions/download-artifact@v4
         with:
           path: artifacts
           merge-multiple: true
